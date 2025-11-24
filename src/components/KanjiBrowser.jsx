@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import './KanjiBrowser.css';
 
-export default function KanjiBrowser({ decksMap = {}, selectedDecks = [], onSelect = () => {}, onClose = () => {}, srsMap = {} }) {
+export default function KanjiBrowser({ decksMap = {}, selectedDecks = [], onPractice = () => {}, onClose = () => {}, srsMap = {} }) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(null);
 
@@ -50,7 +50,7 @@ export default function KanjiBrowser({ decksMap = {}, selectedDecks = [], onSele
 
         <div className="kb-grid" aria-live="polite">
           {visible.length === 0 ? <div className="kb-empty">Aucun kanji trouvé.</div> : visible.map((k, i) => (
-            <button key={k+i} className="kb-kanji" onClick={()=>onClickKanji(k)} title={`Rechercher ${k}`}>{k}</button>
+            <button key={k+i} className="kb-kanji" onClick={()=>setSelected(k)} title={`Rechercher ${k}`}>{k}</button>
           ))}
         </div>
 
@@ -72,8 +72,9 @@ export default function KanjiBrowser({ decksMap = {}, selectedDecks = [], onSele
                       <div style={{textAlign:'right'}}>
                         <div style={{fontSize:12, color:'var(--muted)'}}>deck: {c._deck}</div>
                         <div style={{fontSize:12}}>SRS: {Math.round(((s.progressKana||0)+(s.progressKanji||0))/2)}%</div>
-                        <div style={{marginTop:6}}>
-                          <button onClick={()=>onSelect(c.kanji)} style={{padding:'6px 8px', borderRadius:6}}>Go</button>
+                        <div style={{marginTop:6, display:'flex', gap:6}}>
+                          <button onClick={()=>{ /* just show info already visible */ }} style={{padding:'6px 8px', borderRadius:6}}>View</button>
+                          <button onClick={()=>onPractice(c.id)} style={{padding:'6px 8px', borderRadius:6}}>Practice</button>
                         </div>
                       </div>
                     </div>

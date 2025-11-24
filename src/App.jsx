@@ -177,31 +177,34 @@ export default function App() {
     return (romajiList || []).some(r => normalizeRomaji(r) === inNorm);
   }
 
-  // Kanji checking routine: kana typing + optional drawing similarity
+  // updated kanji check to accept romaji or kana for readings
   async function checkAnswerForKanji(localCard) {
     if (!localCard) return false;
     let kanaOk = null;
     if (inputValue && inputValue.trim()) {
-      kanaOk = (localCard.kana || []).map(k => toHiraganaRaw(k)).some(k => toHiraganaRaw(inputValue) === k);
+      const raw = inputValue.trim();
+      const ascii = /^[\x00-\x7F]+$/.test(raw);
+      if (ascii) {
+        // treat as romaji
+        kanaOk = romajiMatches(raw, localCard.romaji || []) || (localCard.kana || []).map(k=>normalizeRomaji(k)).includes(normalizeRomaji(raw));
+      } else {
+        // treat as kana/kanji
+        const hiraIn = toHiraganaRaw(raw);
+        kanaOk = (localCard.kana || []).map(k=>toHiraganaRaw(k)).some(k => k === hiraIn);
+      }
     }
     let drawOk = null;
     if (promptMode === 'meaning->kanji') {
-      try {
-        const userImg = boardRef.current?.getImage ? boardRef.current.getImage(64) : null;
-        if (!userImg) drawOk = false;
-        else {
-          // render target and compare
-          const target = renderKanjiImage(localCard.kanji, 64);
-          let sum = 0;
-          for (let i = 0; i < userImg.length; i++) sum += Math.abs(userImg[i] - target[i]);
-          const sim = 1 - (sum / (255 * userImg.length));
-          drawOk = sim >= 0.48;
-        }
-      } catch {
-        drawOk = false;
+      // same as before: compute similarity
+      const userImg = boardRef.current?.getImage ? boardRef.current.getImage(64) : null;
+      if (!userImg) drawOk = false;
+      else {
+        const target = renderKanjiImage(localCard.kanji, 64);
+        let sum = 0; for (let i=0;i<userImg.length;i++) sum += Math.abs(userImg[i] - target[i]);
+        const sim = 1 - (sum / (255 * userImg.length));
+        drawOk = sim >= 0.48;
       }
     }
-    // decide overall
     let overall = false;
     if (promptMode === 'kanji->kana') overall = !!kanaOk;
     else if (promptMode === 'meaning->kanji') {
@@ -212,8 +215,20 @@ export default function App() {
     setAnswered(true);
     setPendingDetail({ kanaOk, drawOk });
     setShowAnswer(true);
-    setFeedback(overall ? { ok: true, message: 'Correct.' } : { ok: false, message: 'Incorrect.' });
+    setFeedback(overall ? { ok:true, message:'Correct.' } : { ok:false, message:'Incorrect.' });
     return overall;
+  }
+
+  // wire KanjiBrowser.onPractice to jump to card index
+  function handlePracticeCard(cardId) {
+    const idx = pool.findIndex(c => c.id === cardId);
+    if (idx >= 0) {
+      setCurrentIdx(idx);
+      setShowKanjiBrowser(false);
+    } else {
+      setShowKanjiBrowser(false);
+      setFeedback({ ok:false, message: 'Card not in current selection.' });
+    }
   }
 
   // main validation
@@ -470,18 +485,7 @@ export default function App() {
               selectedDecks={selectedDecks}
               srsMap={srsMap}
               onClose={() => setShowKanjiBrowser(false)}
-              onSelect={(k) => {
-                // jump to first card in current pool containing the selected kanji and close overlay
-                const idx = pool.findIndex(c => c.kanji && c.kanji.includes(k));
-                if (idx >= 0) {
-                  setCurrentIdx(idx);
-                  setShowKanjiBrowser(false);
-                } else {
-                  // If not in current pool, just close and notify
-                  setShowKanjiBrowser(false);
-                  setFeedback({ ok: false, message: 'Le kanji sélectionné n\'est pas dans la sélection actuelle.' });
-                }
-              }}
+              onPractice={handlePracticeCard}
             />
           )}
         </div>
