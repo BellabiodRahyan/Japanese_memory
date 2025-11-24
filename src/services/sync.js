@@ -4,6 +4,7 @@
 
 let supabase = null;
 const LOCAL_KEY_PREFIX = 'jt_remote_';
+let authListener = null;
 
 export async function initSync() {
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -13,7 +14,7 @@ export async function initSync() {
     // dynamic import so bundler doesn't fail when the package isn't present or env not set
     const mod = await import('@supabase/supabase-js');
     const createClient = mod.createClient || mod.default?.createClient;
-    if (!createClient && !mod.createClient) {
+    if (!createClient) {
       console.warn('Supabase client not found in module');
       return false;
     }
@@ -24,6 +25,53 @@ export async function initSync() {
     supabase = null;
     return false;
   }
+}
+
+// AUTH helpers ------------------------------------------------------
+export async function signInWithEmail(email) {
+  if (!supabase) throw new Error('Supabase not initialized');
+  try {
+    // magic link sign in
+    const res = await supabase.auth.signInWithOtp({ email });
+    return res;
+  } catch (e) {
+    console.error('signInWithEmail error', e);
+    throw e;
+  }
+}
+
+export async function signOut() {
+  if (!supabase) return;
+  try {
+    await supabase.auth.signOut();
+  } catch (e) {
+    console.warn('signOut failed', e);
+  }
+}
+
+export async function getUser() {
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase.auth.getUser();
+    return data?.user || null;
+  } catch (e) {
+    console.warn('getUser failed', e);
+    return null;
+  }
+}
+
+export function onAuthStateChange(cb) {
+  if (!supabase) return () => {};
+  // remove previous listener if any
+  if (authListener && authListener.subscription) authListener.subscription.unsubscribe();
+  const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
+    // event: 'SIGNED_IN' | 'SIGNED_OUT' etc.
+    cb(event, session);
+  });
+  authListener = { subscription };
+  return () => {
+    try { subscription.unsubscribe(); } catch(e){}
+  };
 }
 
 // Load SRS for user (userId can be null → fallback local)

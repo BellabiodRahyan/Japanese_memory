@@ -58,3 +58,28 @@ Vercel déploie automatiquement à chaque push.
 
 8) Besoin d'aide ?
 Dis‑moi quel hébergeur tu veux (Netlify, Vercel ou GitHub Pages) et je te guide précisément pas à pas ou je prépare la config CI si tu veux tout automatiser.
+
+Supabase integration (SRS sync & auth)
+1. Create a project on https://app.supabase.com
+2. In the Supabase SQL editor run this minimal table creation:
+
+   create table if not exists srs (
+     id uuid default gen_random_uuid() primary key,
+     user_id text not null,
+     deck text not null,
+     payload jsonb,
+     updated_at timestamptz default now()
+   );
+   create unique index on srs (user_id, deck);
+
+3. (Optional) In Supabase → Auth → Settings allow email sign-ups.
+4. Add environment variables in Netlify / Vercel (or .env.local during dev):
+   - VITE_SUPABASE_URL = https://your-project-ref.supabase.co
+   - VITE_SUPABASE_ANON_KEY = <anon-public-api-key>
+5. On the frontend:
+   - Sign in with your email (magic link). After signing in the app will automatically
+     load and merge your remote SRS for the selected deck and save changes back.
+6. Notes:
+   - The app falls back to localStorage if Supabase env vars are not set.
+   - Make sure to configure row-level security and policies if you want stricter access.
+   - For production, set RLS policies so users can only access their own srs rows.

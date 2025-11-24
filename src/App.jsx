@@ -4,7 +4,8 @@ import ScoreBar from './components/ScoreBar';
 import { decks } from './data/decks';
 import { shuffle } from './utils/shuffle';
 import KanjiBrowser from './components/KanjiBrowser';
-import { initSync, loadSrs, saveSrs, mergeSrs, loadDecksRemote } from './services/sync';
+import Auth from './components/Auth';
+import { initSync, loadSrs, saveSrs, mergeSrs, getUser, onAuthStateChange } from './services/sync';
 
 const AVAILABLE_DECKS = Object.keys(decks);
 
@@ -441,32 +442,158 @@ export default function App() {
 
   // on app start, initialize sync and load SRS/decks if available
   useEffect(() => {
+    let mounted = true;
     (async () => {
       const hasRemote = await initSync();
-      // if remote decks available, you may load them and override local decks variable
-      if (hasRemote) {
-        const remote = await loadDecksRemote();
-        if (remote) {
-          // merge remote decks into local runtime decks object
-          // ...example: set a state `remoteDecks` and use it as source for AVAILABLE_DECKS...
-        }
+      if (!hasRemote) return;
+      // try to get current user
+      const u = await getUser();
+      if (!mounted) return;
+      setUser(u);
+      try {
+        const remote = await loadSrs(u?.id || null, deckKey);
+        // merge remote with local srsMap (local wins if newer)
+        setSrsMap(prev => mergeSrs(prev, remote || {}));
+      } catch (e) {
+        console.warn('Failed to load remote SRS', e);
       }
-      // Example: if you have userId (after authentication), load SRS:
-      // const userId = currentUser?.id || null;
-      // const remoteSrs = await loadSrs(userId, deckKey);
-      // setSrsMap(prev => mergeSrs(prev, remoteSrs));
+      // subscribe to auth state changes to update user
+      const unsub = onAuthStateChange(async (event, session) => {
+        const nu = await getUser();
+        setUser(nu);
+        // when signing in, load and merge remote SRS for current deck
+        if (nu) {
+          const remote = await loadSrs(nu.id, deckKey);
+          setSrsMap(prev => mergeSrs(prev, remote || {}));
+        }
+      });
+      // keep unsubscribe around
+      appAuthUnsub.current = unsub;
     })();
-  }, []);
+    return () => { mounted = false; if (appAuthUnsub.current) appAuthUnsub.current(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount
 
-  // persist srsMap to remote (debounced)
+  // watch deckKey changes: when switching decks, if user is signed in load SRS for that deck
   useEffect(() => {
-    const timer = setTimeout(async () => {
-      // const userId = currentUser?.id || null;
-      // await saveSrs(userId, deckKey, srsMap);
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, [srsMap, deckKey]);
+    (async () => {
+      if (!user) return;
+      try {
+        const remote = await loadSrs(user.id, deckKey);
+        setSrsMap(prev => mergeSrs(prev, remote || {}));
+      } catch(e){}
+    })();
+  }, [deckKey, user]);
 
+  // Debounced save to remote when srsMap changes and user exists
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      if (user) {
+        try {
+          await saveSrs(user.id, deckKey, srsMap);
+        } catch (e) {
+          console.warn('saveSrs failed', e);
+        }
+      } else {
+        // always save local fallback to localStorage handled by saveSrs when user null
+        try { await saveSrs(null, deckKey, srsMap); } catch(e){}
+      }
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [srsMap, deckKey, user]);
+
+  // small ref to keep auth unsubscribe between renders
+  const appAuthUnsub = useRef(null);
+
+  const percent = totalCount === 0 ? 0 : Math.round((correctCount / totalCount) * 100);
+
+  // helper: normalize string to hiragana (basic)
+  function toHiraganaRaw(str = '') {
+    if (!str) return '';
+    // Unicode NFKC normalize, trim, lower
+    let s = str.normalize('NFKC').trim();
+    // convert Katakana to Hiragana (basic unicode offset)
+    let out = '';
+    for (const ch of s) {
+      const code = ch.charCodeAt(0);
+      // Katakana block U+30A0..U+30FF
+      if (code >= 0x30A1 && code <= 0x30F3) {
+        out += String.fromCharCode(code - 0x60);
+      } else {
+        out += ch;
+      }
+    }
+    // remove spaces and punctuation often typed
+    out = out.replace(/\s+/g, '').replace(/[，,。 。·･]/g, '');
+    return out;
+  }
+
+  function isAsciiWord(s = '') {
+    return /^[\x00-\x7F]+$/.test(s);
+  }
+
+  // check typed kana against card.kana or card.romaji (if ascii)
+  function isKanaMatch(input, card) {
+    if (!card) return false;
+    const raw = input || '';
+    if (!raw) return false;
+    if (isAsciiWord(raw)) {
+      // compare to romaji variants
+      const v = raw.toLowerCase().replace(/\s+/g, '');
+      return (card.romaji || []).map(r=>r.toLowerCase()).some(r=>r === v);
+    } else {
+      const a = toHiraganaRaw(raw);
+      return (card.kana || []).map(k=>toHiraganaRaw(k)).some(k=>k === a);
+    }
+  }
+
+  // render the target kanji into a downscaled grayscale array (same format as DrawingBoard.getImage)
+  function renderKanjiImage(kanji, size = 64) {
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const ctx = off.getContext('2d');
+    // white background
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, size, size);
+    // draw kanji centered
+    ctx.fillStyle = '#000';
+    // choose a large font to fill canvas
+    const fontSize = Math.floor(size * 0.85);
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.font = `bold ${fontSize}px serif`;
+    ctx.fillText(kanji, size / 2, size / 2 + Math.floor(fontSize * 0.05));
+    // read pixels
+    const img = ctx.getImageData(0, 0, size, size).data;
+    const gray = new Uint8ClampedArray(size * size);
+    for (let i = 0, p = 0; i < img.length; i += 4, p++) {
+      const r = img[i], g = img[i + 1], b = img[i + 2];
+      const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      gray[p] = lum;
+    }
+    return gray;
+  }
+
+  // similarity: 1 - normalized absolute diff (0..1)
+  function similarity(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+      sum += Math.abs(a[i] - b[i]);
+    }
+    const max = 255 * a.length;
+    return 1 - (sum / max);
+  }
+
+  // Header: show Auth component and user's email
+  // merge into header JSX (replace or add inside header's right side)
+  // Example snippet to place inside header's right area:
+  /*
+    <div style={{display:'flex', gap:8, alignItems:'center'}}>
+      <Auth onUserChange={(u) => setUser(u)} />
+    </div>
+  */
   return (
     <div style={{
       maxWidth: 980, margin: '28px auto', padding: 20, borderRadius: 12,
@@ -511,6 +638,10 @@ export default function App() {
           </div>
 
           <button onClick={()=>setShowKanjiBrowser(true)} style={{padding:'8px 10px', borderRadius:8, border:'none', background:'rgba(255,255,255,0.03)', color:'inherit', cursor:'pointer'}}>Kanji Menu</button>
+
+          <div style={{display:'flex', gap:8, alignItems:'center'}}>
+            <Auth onUserChange={(u) => setUser(u)} />
+          </div>
         </div>
       </header>
 
