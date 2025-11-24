@@ -65,16 +65,35 @@ export async function getUser() {
 
 export function onAuthStateChange(cb) {
   if (!supabase) return () => {};
-  // remove previous listener if any
-  if (authListener && authListener.subscription) authListener.subscription.unsubscribe();
-  const { data: subscription } = supabase.auth.onAuthStateChange((event, session) => {
-    // event: 'SIGNED_IN' | 'SIGNED_OUT' etc.
-    cb(event, session);
-  });
-  authListener = { subscription };
-  return () => {
-    try { subscription.unsubscribe(); } catch(e){}
-  };
+  // Remove previous listener if any
+  try {
+    // supabase.auth.onAuthStateChange returns { data: { subscription } } in v2
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      try { cb(event, session); } catch(e){ console.error('auth cb error', e); }
+    });
+    const subscription = data?.subscription ?? data;
+    // return a safe unsubscribe function
+    return () => {
+      try {
+        if (!subscription) return;
+        if (typeof subscription.unsubscribe === 'function') {
+          subscription.unsubscribe();
+        } else if (typeof subscription === 'function') {
+          // some older forms return a function
+          subscription();
+        } else if (typeof subscription.remove === 'function') {
+          subscription.remove();
+        } else if (subscription?.subscription?.unsubscribe) {
+          subscription.subscription.unsubscribe();
+        }
+      } catch (e) {
+        console.warn('Failed to unsubscribe auth listener', e);
+      }
+    };
+  } catch (e) {
+    console.warn('onAuthStateChange setup failed', e);
+    return () => {};
+  }
 }
 
 // Load SRS for user (userId can be null → fallback local)

@@ -138,122 +138,188 @@ export default function App() {
     boardRef.current?.clear?.();
   }
 
-  // Check answer simplified for both flows
+  // small ref to keep auth unsubscribe between renders
+  const appAuthUnsub = useRef(null);
+
+  // make sure recentSeen exists
+  const recentSeen = useRef([]);
+
+  // Robust kanji checking (uses toHiraganaRaw and drawing similarity)
+  async function checkAnswerForKanji(localCard) {
+    if (!localCard) return false;
+    let kanaOk = null;
+    if (kanaInput && kanaInput.trim()) {
+      const normalized = toHiraganaRaw(kanaInput);
+      kanaOk = (localCard.kana || []).map(k => toHiraganaRaw(k)).some(k => k === normalized);
+    }
+    let drawOk = null;
+    if (promptMode === 'meaning->kanji') {
+      try {
+        const userImg = boardRef.current?.getImage ? boardRef.current.getImage(64) : null;
+        if (!userImg) drawOk = false;
+        else {
+          const target = renderKanjiImage(localCard.kanji, 64);
+          let sum = 0;
+          for (let i = 0; i < userImg.length; i++) sum += Math.abs(userImg[i] - target[i]);
+          const sim = 1 - (sum / (255 * userImg.length));
+          drawOk = sim >= 0.48;
+        }
+      } catch (e) {
+        drawOk = false;
+      }
+    }
+    // Decide overall based on promptMode
+    let overall = false;
+    if (promptMode === 'kanji->kana') overall = !!kanaOk;
+    else if (promptMode === 'meaning->kanji') {
+      // if user typed kana and drew, require both; else accept whichever exists
+      if (kanaOk !== null && drawOk !== null) overall = !!(kanaOk && drawOk);
+      else if (kanaOk !== null) overall = !!kanaOk;
+      else overall = !!drawOk;
+    }
+    // set state
+    setAnswered(true);
+    setPendingDetail({ kanaOk, drawOk });
+    setPendingResult(overall);
+    setShowAnswer(true);
+    setFeedback(overall ? { ok: true, message: 'Correct' } : { ok: false, message: 'Incorrect' });
+    return overall;
+  }
+
+  // Main checkAnswer: handles verb/word and kanji flows
   async function checkAnswer() {
-    if (!card) return;
+    if (!card) {
+      setFeedback({ ok: false, message: 'No card' });
+      return;
+    }
+    // Verb/Word decks
     if (isVerbWordCard(card)) {
-      // jp->meaning: compare meaning text loosely
       if (promptMode === 'jp->meaning') {
-        const v = (kanaInput||'').trim().toLowerCase();
-        const ok = (card.meanings||[]).some(m => m.toLowerCase().trim() === v || m.toLowerCase().includes(v));
+        const v = (kanaInput || '').trim().toLowerCase();
+        const ok = (card.meanings || []).some(m => m.toLowerCase().trim() === v || m.toLowerCase().includes(v));
         setAnswered(true);
         setPendingDetail({ jpMeaningOk: ok });
         setPendingResult(ok);
         setShowAnswer(true);
-        setFeedback(ok ? { ok:true, message:'Correct' } : { ok:false, message:'Incorrect' });
+        setFeedback(ok ? { ok: true, message: 'Correct' } : { ok: false, message: 'Incorrect' });
         return;
-      }
-      // meaning->jp: accept romaji/kana/kanji
-      if (promptMode === 'meaning->jp') {
-        const raw = (kanaInput||'').trim();
+      } else if (promptMode === 'meaning->jp') {
+        const raw = (kanaInput || '').trim();
         const ascii = /^[\x00-\x7F]+$/.test(raw);
         let ok = false;
         if (ascii) {
-          const v = raw.replace(/\s+/g,'').toLowerCase();
-          ok = (card.romaji||[]).some(r=>r.replace(/\s+/g,'').toLowerCase() === v);
+          const v = raw.replace(/\s+/g, '').toLowerCase();
+          ok = (card.romaji || []).map(r => r.replace(/\s+/g, '').toLowerCase()).includes(v);
         } else {
           const hira = toHiraganaRaw(raw);
-          ok = (card.kana||[]).map(k=>toHiraganaRaw(k)).some(k=>k === hira) || ((card.kanji||'') === raw || (card.kanji||'').includes(raw));
+          ok = (card.kana || []).map(k => toHiraganaRaw(k)).some(k => k === hira) || ((card.kanji || '') === raw || (card.kanji || '').includes(raw));
         }
         setAnswered(true);
         setPendingDetail({ jpMeaningOk: ok });
         setPendingResult(ok);
         setShowAnswer(true);
-        setFeedback(ok ? { ok:true, message:'Correct' } : { ok:false, message:'Incorrect' });
+        setFeedback(ok ? { ok: true, message: 'Correct' } : { ok: false, message: 'Incorrect' });
         return;
       }
-    } else if (isKanjiCard(card)) {
-      // Kanji flow
+    }
+
+    // Kanji decks
+    if (isKanjiCard(card)) {
       await checkAnswerForKanji(card);
       return;
     }
-    // fallback mark wrong
+
+    // fallback: mark incorrect but be explicit
     setAnswered(true);
-    setPendingDetail({ jpMeaningOk:false });
+    setPendingDetail({ jpMeaningOk: false });
     setPendingResult(false);
     setShowAnswer(true);
-    setFeedback({ ok:false, message:'Unable to validate' });
+    setFeedback({ ok: false, message: 'Incorrect (unable to validate reliably)' });
   }
 
-  // show answer counts as failure
+  // Show answer: reveal but do not immediately finalize; mark as "shown" (user can press Next to count as wrong)
   function handleShowAnswer() {
     if (!card) return;
     setShowAnswer(true);
     setAnswered(true);
-    // set pending as failure (will be recorded if Next is pressed)
-    if (isVerbWordCard(card)) setPendingDetail({ jpMeaningOk:false });
-    else setPendingDetail({ kanaOk:false, drawOk:false });
+    // do not auto-record failure; pendingDetail left null so Next will treat as wrong unless user marks correct
     setPendingResult(false);
-    setFeedback({ ok:false, message:'Answer shown — counted as incorrect' });
+    setFeedback({ ok: false, message: 'Answer shown — press Next to continue (will be counted as incorrect).' });
   }
 
-  // finalize advance: use pendingDetail to update SRS and go to next
-  function finalizeAdvance(detail = null) {
-    const d = detail || pendingDetail || {};
-    if (card) {
-      // map jpMeaningOk -> kanaOk for SRS update when appropriate
-      if ('jpMeaningOk' in d) {
-        updateSrsForCard(card.id, { kanaOk: d.jpMeaningOk ? true : false, drawOk: null });
-      } else {
-        updateSrsForCard(card.id, { kanaOk: d.kanaOk ?? null, drawOk: d.drawOk ?? null });
-      }
+  // Manual mark handlers
+  function onMarkWasCorrect() {
+    if (!card) return;
+    if (isVerbWordCard(card)) {
+      setPendingDetail({ jpMeaningOk: true });
+    } else {
+      setPendingDetail({ kanaOk: true, drawOk: true });
     }
-    // move to next (avoid immediate repeats)
-    recentSeen.current = [card?.id, ...recentSeen.current.filter(x=>x!==card?.id)].slice(0,8);
+    setAnswered(true);
+    setPendingResult(true);
+    setShowAnswer(true);
+    setFeedback({ ok: true, message: 'Marked correct — press Next to proceed.' });
+  }
+  function onMarkWasWrong() {
+    if (!card) return;
+    if (isVerbWordCard(card)) {
+      setPendingDetail({ jpMeaningOk: false });
+    } else {
+      setPendingDetail({ kanaOk: false, drawOk: false });
+    }
+    setAnswered(true);
+    setPendingResult(false);
+    setShowAnswer(true);
+    setFeedback({ ok: false, message: 'Marked incorrect — press Next to proceed.' });
+  }
+
+  // Finalize + advance (Next)
+  function finalizeAdvance(detail = null) {
+    if (!card) return;
+    const d = detail ?? pendingDetail ?? {};
+    // map jpMeaningOk => updateSrsForCard fields
+    if ('jpMeaningOk' in d) {
+      updateSrsForCard(card.id, { kanaOk: d.jpMeaningOk, drawOk: null });
+    } else {
+      updateSrsForCard(card.id, { kanaOk: d.kanaOk ?? null, drawOk: d.drawOk ?? null });
+    }
+    // add to recent and pick next
+    recentSeen.current = [card.id, ...recentSeen.current.filter(x => x !== card.id)].slice(0, 8);
     const next = chooseNextIndex();
     setCurrentIdx(next);
     // reset UI
     setKanaInput('');
     setShowAnswer(false);
     setAnswered(false);
-    setPendingResult(null);
     setPendingDetail(null);
+    setPendingResult(null);
     setFeedback(null);
     boardRef.current?.clear?.();
   }
 
-  // buttons for manual marking (correct/wrong)
-  function onMarkWasCorrect() {
-    if (!card) return;
-    if (isVerbWordCard(card)) {
-      setAnswered(true); setPendingDetail({ jpMeaningOk:true }); setPendingResult(true); setShowAnswer(true);
-      setFeedback({ ok:true, message:'Marked correct — press Next' });
-    } else {
-      setAnswered(true); setPendingDetail({ kanaOk:true, drawOk: true }); setPendingResult(true); setShowAnswer(true);
-      setFeedback({ ok:true, message:'Marked correct — press Next' });
+  function handleNext() {
+    // If not answered -> treat as wrong and finalize
+    if (!answered) {
+      if (isVerbWordCard(card)) finalizeAdvance({ jpMeaningOk: false });
+      else finalizeAdvance({ kanaOk: false, drawOk: false });
+      return;
     }
-  }
-  function onMarkWasWrong() {
-    if (!card) return;
-    if (isVerbWordCard(card)) {
-      setAnswered(true); setPendingDetail({ jpMeaningOk:false }); setPendingResult(false); setShowAnswer(true);
-      setFeedback({ ok:false, message:'Marked incorrect — press Next' });
-    } else {
-      setAnswered(true); setPendingDetail({ kanaOk:false, drawOk:false }); setPendingResult(false); setShowAnswer(true);
-      setFeedback({ ok:false, message:'Marked incorrect — press Next' });
+    // If pendingDetail exists use it; otherwise consider shown -> count as wrong
+    if (pendingDetail) finalizeAdvance();
+    else {
+      if (isVerbWordCard(card)) finalizeAdvance({ jpMeaningOk: false });
+      else finalizeAdvance({ kanaOk: false, drawOk: false });
     }
   }
 
-  // next button handler
-  function handleNext() {
-    // if not answered yet treat as wrong and advance
-    if (!answered) {
-      if (isVerbWordCard(card)) finalizeAdvance({ jpMeaningOk:false });
-      else finalizeAdvance({ kanaOk:false, drawOk:false });
-      return;
-    }
-    finalizeAdvance();
-  }
+  // cleanup auth unsub safely
+  useEffect(() => {
+    // subscribe earlier (example)
+    // store unsub in appAuthUnsub.current via onAuthStateChange elsewhere
+    return () => {
+      try { if (typeof appAuthUnsub.current === 'function') appAuthUnsub.current(); } catch(e){ /* ignore */ }
+    };
+  }, []);
 
   // small UI: central simplified layout
   return (
