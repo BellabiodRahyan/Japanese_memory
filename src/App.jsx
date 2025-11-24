@@ -20,6 +20,9 @@ export default function App() {
   const [totalCount, setTotalCount] = useState(0);
   const boardRef = useRef();
 
+  // Ensure user state is declared early so other effects / logic can safely reference it
+  const [user, setUser] = useState(null);
+
   const [cardMode, setCardMode] = useState(selectedModes[0] || 'kanji->kana');
   const [kanaInput, setKanaInput] = useState('');
   const [feedback, setFeedback] = useState(null);
