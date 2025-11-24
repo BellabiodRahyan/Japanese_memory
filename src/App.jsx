@@ -186,130 +186,122 @@ export default function App() {
     return overall;
   }
 
-  // Main checkAnswer: handles verb/word and kanji flows
+  // helper: normalize romaji (lowercase, remove spaces, map macrons to simple vowels)
+  function normalizeRomaji(s = '') {
+    const map = { 'ā':'a','ī':'i','ū':'u','ē':'e','ō':'o','Ā':'a','Ī':'i','Ū':'u','Ē':'e','Ō':'o' };
+    let out = String(s || '').normalize('NFKC').trim().toLowerCase();
+    out = out.replace(/\s+/g, '');
+    out = out.replace(/[āīūēōĀĪŪĒŌ]/g, ch => map[ch] || ch);
+    // remove punctuation
+    out = out.replace(/[^a-z0-9]/g, '');
+    return out;
+  }
+
+  // robust comparison for romaji lists
+  function romajiMatches(input, romajiList = []) {
+    if (!input) return false;
+    const inNorm = normalizeRomaji(input);
+    return (romajiList || []).some(r => normalizeRomaji(r) === inNorm);
+  }
+
+  // ---------- Validation logic ----------
   async function checkAnswer() {
     if (!card) {
-      setFeedback({ ok: false, message: 'No card' });
+      setFeedback({ ok:false, message: 'Aucune carte sélectionnée.' });
       return;
     }
-    // Verb/Word decks
+
+    // Verb/Word card flows
     if (isVerbWordCard(card)) {
       if (promptMode === 'jp->meaning') {
-        const v = (kanaInput || '').trim().toLowerCase();
-        const ok = (card.meanings || []).some(m => m.toLowerCase().trim() === v || m.toLowerCase().includes(v));
+        // Expect meaning: compare normalized lowercase substring
+        const user = (kanaInput || '').trim().toLowerCase();
+        const ok = (card.meanings || []).some(m => {
+          const mm = String(m || '').toLowerCase().trim();
+          return mm === user || (user.length > 1 && mm.includes(user));
+        });
         setAnswered(true);
         setPendingDetail({ jpMeaningOk: ok });
-        setPendingResult(ok);
-        setShowAnswer(true);
-        setFeedback(ok ? { ok: true, message: 'Correct' } : { ok: false, message: 'Incorrect' });
+        setPendingResult(!!ok);
+        setShowAnswer(true); // reveal answer on validation
+        setFeedback(ok ? { ok:true, message: 'Correct.' } : { ok:false, message: 'Incorrect.' });
         return;
-      } else if (promptMode === 'meaning->jp') {
+      }
+
+      if (promptMode === 'meaning->jp') {
         const raw = (kanaInput || '').trim();
         const ascii = /^[\x00-\x7F]+$/.test(raw);
         let ok = false;
         if (ascii) {
-          const v = raw.replace(/\s+/g, '').toLowerCase();
-          ok = (card.romaji || []).map(r => r.replace(/\s+/g, '').toLowerCase()).includes(v);
+          // compare romaji normalized
+          ok = romajiMatches(raw, card.romaji || []);
         } else {
-          const hira = toHiraganaRaw(raw);
-          ok = (card.kana || []).map(k => toHiraganaRaw(k)).some(k => k === hira) || ((card.kanji || '') === raw || (card.kanji || '').includes(raw));
+          // compare kana (normalize) or kanji exact
+          const hiraIn = toHiraganaRaw(raw);
+          ok = (card.kana || []).map(k => toHiraganaRaw(k)).some(k => k === hiraIn) || ((card.kanji || '') === raw || (card.kanji || '').includes(raw));
         }
         setAnswered(true);
         setPendingDetail({ jpMeaningOk: ok });
-        setPendingResult(ok);
+        setPendingResult(!!ok);
         setShowAnswer(true);
-        setFeedback(ok ? { ok: true, message: 'Correct' } : { ok: false, message: 'Incorrect' });
+        setFeedback(ok ? { ok:true, message: 'Correct.' } : { ok:false, message: 'Incorrect.' });
         return;
       }
     }
 
-    // Kanji decks
+    // Kanji flows: delegate to kanji checking routine (existing)
     if (isKanjiCard(card)) {
       await checkAnswerForKanji(card);
       return;
     }
 
-    // fallback: mark incorrect but be explicit
+    // fallback
     setAnswered(true);
-    setPendingDetail({ jpMeaningOk: false });
+    setPendingDetail({ jpMeaningOk:false });
     setPendingResult(false);
     setShowAnswer(true);
-    setFeedback({ ok: false, message: 'Incorrect (unable to validate reliably)' });
+    setFeedback({ ok:false, message: 'Incorrect.' });
   }
 
-  // Show answer: reveal but do not immediately finalize; mark as "shown" (user can press Next to count as wrong)
+  // Show answer now just reveals; it sets answered so the next press counts as failure when confirmed via Next
   function handleShowAnswer() {
     if (!card) return;
     setShowAnswer(true);
     setAnswered(true);
-    // do not auto-record failure; pendingDetail left null so Next will treat as wrong unless user marks correct
+    // mark pendingResult false but do not immediately finalize; Next will record this as incorrect
     setPendingResult(false);
-    setFeedback({ ok: false, message: 'Answer shown — press Next to continue (will be counted as incorrect).' });
+    setPendingDetail({ jpMeaningOk: false, kanaOk: false, drawOk: false });
+    setFeedback({ ok:false, message: 'Réponse affichée — appuyez sur Suivant pour continuer (comptera comme incorrect).' });
   }
 
-  // Manual mark handlers
-  function onMarkWasCorrect() {
-    if (!card) return;
-    if (isVerbWordCard(card)) {
-      setPendingDetail({ jpMeaningOk: true });
-    } else {
-      setPendingDetail({ kanaOk: true, drawOk: true });
-    }
-    setAnswered(true);
-    setPendingResult(true);
-    setShowAnswer(true);
-    setFeedback({ ok: true, message: 'Marked correct — press Next to proceed.' });
-  }
-  function onMarkWasWrong() {
-    if (!card) return;
-    if (isVerbWordCard(card)) {
-      setPendingDetail({ jpMeaningOk: false });
-    } else {
-      setPendingDetail({ kanaOk: false, drawOk: false });
-    }
-    setAnswered(true);
-    setPendingResult(false);
-    setShowAnswer(true);
-    setFeedback({ ok: false, message: 'Marked incorrect — press Next to proceed.' });
-  }
-
-  // Finalize + advance (Next)
-  function finalizeAdvance(detail = null) {
-    if (!card) return;
-    const d = detail ?? pendingDetail ?? {};
-    // map jpMeaningOk => updateSrsForCard fields
-    if ('jpMeaningOk' in d) {
-      updateSrsForCard(card.id, { kanaOk: d.jpMeaningOk, drawOk: null });
-    } else {
-      updateSrsForCard(card.id, { kanaOk: d.kanaOk ?? null, drawOk: d.drawOk ?? null });
-    }
-    // add to recent and pick next
-    recentSeen.current = [card.id, ...recentSeen.current.filter(x => x !== card.id)].slice(0, 8);
-    const next = chooseNextIndex();
-    setCurrentIdx(next);
-    // reset UI
-    setKanaInput('');
-    setShowAnswer(false);
-    setAnswered(false);
-    setPendingDetail(null);
-    setPendingResult(null);
-    setFeedback(null);
-    boardRef.current?.clear?.();
-  }
-
-  function handleNext() {
-    // If not answered -> treat as wrong and finalize
+  // Enter key handler attached to input(s): first Enter = validate, second Enter = next
+  function onAnswerKeyDown(e) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
     if (!answered) {
+      checkAnswer();
+    } else {
+      // already answered -> move to next
+      handleNext();
+    }
+  }
+
+  // Next handler: finalize current pendingDetail (if none and showAnswer true, treat as wrong)
+  function handleNext() {
+    if (!card) return;
+    if (!answered) {
+      // user skipped without validating: count as wrong
       if (isVerbWordCard(card)) finalizeAdvance({ jpMeaningOk: false });
       else finalizeAdvance({ kanaOk: false, drawOk: false });
       return;
     }
-    // If pendingDetail exists use it; otherwise consider shown -> count as wrong
-    if (pendingDetail) finalizeAdvance();
-    else {
+    // if answered but no explicit pendingDetail (e.g., user clicked Show Answer) count as wrong
+    if (!pendingDetail) {
       if (isVerbWordCard(card)) finalizeAdvance({ jpMeaningOk: false });
       else finalizeAdvance({ kanaOk: false, drawOk: false });
+      return;
     }
+    finalizeAdvance(); // uses pendingDetail
   }
 
   // cleanup auth unsub safely
@@ -354,7 +346,13 @@ export default function App() {
                   (isKanjiCard(card) && (promptMode === 'meaning->kanji')) ? (
                     <div style={{width:'100%'}}><DrawingBoard ref={boardRef} /></div>
                   ) : (
-                    <input value={kanaInput} onChange={e=>setKanaInput(e.target.value)} onKeyDown={(e)=>{ if (e.key==='Enter') checkAnswer(); }} placeholder="Entrez votre réponse puis validez" style={{width:'100%', padding:12, fontSize:18, borderRadius:10, border:'1px solid rgba(255,255,255,0.04)', background:'transparent', color:'inherit'}} />
+                    <input
+                      value={kanaInput}
+                      onChange={e => setKanaInput(e.target.value)}
+                      onKeyDown={onAnswerKeyDown}
+                      placeholder={ promptMode === 'jp->meaning' ? 'Tapez la traduction (meaning)...' : 'Tapez la forme japonaise (kana/romaji/kanji)...' }
+                      style={{width:'100%', padding:12, fontSize:18, borderRadius:10, border:'1px solid rgba(255,255,255,0.04)', background:'transparent', color:'inherit'}}
+                    />
                   )
                 ) : <div style={{color:'var(--muted)'}}>Aucun carte — réglez la sélection dans le menu</div>}
               </div>
