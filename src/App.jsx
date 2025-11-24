@@ -505,8 +505,6 @@ export default function App() {
   // small ref to keep auth unsubscribe between renders
   const appAuthUnsub = useRef(null);
 
-  const percent = totalCount === 0 ? 0 : Math.round((correctCount / totalCount) * 100);
-
   // helper: normalize string to hiragana (basic)
   function toHiraganaRaw(str = '') {
     if (!str) return '';
