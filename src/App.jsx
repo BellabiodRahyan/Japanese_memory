@@ -1,156 +1,185 @@
-import React, { useEffect, useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import Landing from './components/Landing';
 import DrawingBoard from './components/DrawingBoard';
 import ScoreBar from './components/ScoreBar';
-import { decks } from './data/decks';
-import { shuffle } from './utils/shuffle';
 import KanjiBrowser from './components/KanjiBrowser';
 import Auth from './components/Auth';
-import Landing from './components/Landing';
+import { decks } from './data/decks';
+import { shuffle } from './utils/shuffle';
 import toHiraganaRaw from './utils/toHiragana';
 
-// ...existing imports and helper functions (renderKanjiImage, similarity) ...
+// Minimal, self-contained App implementation that is robust and avoids prior ReferenceErrors.
+// - Landing selects decks and enabled modes
+// - Central practice screen: prompt top, canvas or input center, action buttons bottom
+// - Enter: first validate (show result + reveal), second Enter -> next
+// - Show Answer reveals (counts as incorrect when Next pressed)
+// - SRS persisted to localStorage (per-card id)
 
 export default function App() {
-  // basic state
+  // UI state
   const [showLanding, setShowLanding] = useState(true);
-  const [selectedDecks, setSelectedDecks] = useState([]); // filled from landing
+  const [selectedDecks, setSelectedDecks] = useState([]); // array of deck keys
   const [enableKanji, setEnableKanji] = useState(true);
   const [enableWords, setEnableWords] = useState(true);
 
-  // deck/key management: when multiple decks selected we create a combined pool
-  const decksMap = decks; // from data
-  const combinedCards = useMemo(()=>{
-    const out = [];
-    (selectedDecks || []).forEach(k => {
-      const list = decksMap[k] || [];
-      list.forEach(c => out.push({...c, _deck:k}));
-    });
-    return out;
-  }, [decksMap, selectedDecks]);
-
+  // Pool & card pointer
+  const [pool, setPool] = useState([]); // array of card objects { ...card, _deck }
   const [currentIdx, setCurrentIdx] = useState(0);
-  const [shuffledPool, setShuffledPool] = useState([]);
-  const [promptMode, setPromptMode] = useState(''); // dynamic per-card: 'kanji->kana' | 'meaning->kanji' | 'jp->meaning' | 'meaning->jp'
-  const [kanaInput, setKanaInput] = useState('');
+
+  // prompt & input state
+  const [promptMode, setPromptMode] = useState(''); // 'kanji->kana' | 'meaning->kanji' | 'jp->meaning' | 'meaning->jp'
+  const [inputValue, setInputValue] = useState('');
   const [showAnswer, setShowAnswer] = useState(false);
   const [answered, setAnswered] = useState(false);
-  const [pendingResult, setPendingResult] = useState(null);
   const [pendingDetail, setPendingDetail] = useState(null);
-
-  const boardRef = useRef();
-  const [showKanjiBrowser, setShowKanjiBrowser] = useState(false);
-  const [srsMap, setSrsMap] = useState(() => ({})); // existing persistence logic remains
   const [feedback, setFeedback] = useState(null);
-  const recent = useRef([]);
 
-  // initialize from landing start
+  // SRS (localStorage)
+  const [srsMap, setSrsMap] = useState(() => {
+    try {
+      const raw = localStorage.getItem('jm_srs_v1');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // refs
+  const boardRef = useRef(null);
+  const recentSeen = useRef([]);
+
+  // derived
+  const card = pool[currentIdx] || null;
+
+  // helpers: deck type detection
+  const isKanjiDeckKey = (k) => /kanji/i.test(k);
+  const isVerbWordDeckKey = (k) => /verb|word/i.test(k);
+
+  const isKanjiCard = (c) => {
+    if (!c) return false;
+    if (c._deck && isKanjiDeckKey(c._deck)) return true;
+    return !!(c.kanji && /[\p{sc=Han}]/u.test(c.kanji));
+  };
+  const isVerbWordCard = (c) => {
+    if (!c) return false;
+    if (c._deck && isVerbWordDeckKey(c._deck)) return true;
+    // treat non-kanji cards with meanings as vocab
+    return !isKanjiCard(c) && Array.isArray(c.meanings) && c.meanings.length > 0;
+  };
+
+  // persist SRS on change
+  useEffect(() => {
+    try {
+      localStorage.setItem('jm_srs_v1', JSON.stringify(srsMap));
+    } catch {}
+  }, [srsMap]);
+
+  // start from Landing: build pool
   function handleStart({ selectedDecks: sel, enableKanji: ek, enableWords: ew }) {
     setSelectedDecks(sel);
     setEnableKanji(!!ek);
     setEnableWords(!!ew);
-    // build pool and shuffle
-    const pool = [];
+    const p = [];
     sel.forEach(k => {
-      (decksMap[k] || []).forEach(c => pool.push({...c, _deck:k}));
+      const list = decks[k] || [];
+      list.forEach(card => p.push({ ...card, _deck: k }));
     });
-    const sh = shuffle(pool);
-    setShuffledPool(sh);
+    setPool(shuffle(p));
     setCurrentIdx(0);
     setShowLanding(false);
+    setInputValue('');
+    setShowAnswer(false);
+    setAnswered(false);
+    setPendingDetail(null);
+    recentSeen.current = [];
   }
 
-  // helper to determine card type
-  function isKanjiCard(c) {
-    if (!c) return false;
-    // prefer explicit deck name
-    if (c._deck && /kanji/i.test(c._deck)) return true;
-    // fallback: any kanji characters in 'kanji' field
-    if (c.kanji && /[\p{sc=Han}]/u.test(c.kanji)) return true;
-    return false;
-  }
-  function isVerbWordCard(c) {
-    if (!c) return false;
-    if (c._deck && /verb|word/i.test(c._deck)) return true;
-    // also treat items without kanji but with meanings as vocab
-    if (!isKanjiCard(c) && (c.meanings && c.meanings.length > 0)) return true;
-    return false;
-  }
-
-  const card = shuffledPool[currentIdx];
-
-  // choose prompt mode per card depending on deck types and enabled modes
-  useEffect(()=> {
+  // when card changes, choose a prompt mode based on deck type and enabled modes
+  useEffect(() => {
     if (!card) return;
     if (isKanjiCard(card) && enableKanji) {
-      // pick one of two kanji modes randomly
       setPromptMode(Math.random() < 0.5 ? 'kanji->kana' : 'meaning->kanji');
     } else if (isVerbWordCard(card) && enableWords) {
       setPromptMode(Math.random() < 0.5 ? 'jp->meaning' : 'meaning->jp');
     } else {
-      // fallback: prefer jp->meaning
+      // fallback prefer jp->meaning
       setPromptMode('jp->meaning');
     }
-    // reset inputs
-    setKanaInput('');
+    setInputValue('');
     setShowAnswer(false);
     setAnswered(false);
-    setPendingResult(null);
     setPendingDetail(null);
-    boardRef.current?.clear?.();
+    try { boardRef.current?.clear?.(); } catch {}
   }, [card, enableKanji, enableWords]);
 
-  // choose next index with SRS/due + avoid recent (simplified)
+  // choose next index with simple due/preference logic and avoid recent repeats
   function chooseNextIndex() {
-    if (!shuffledPool.length) return 0;
+    if (!pool.length) return 0;
     const now = Date.now();
     const due = [];
-    for (let i=0;i<shuffledPool.length;i++) {
-      const c = shuffledPool[i];
-      const s = srsMap[c.id] || { nextDue:0 };
+    for (let i = 0; i < pool.length; i++) {
+      const c = pool[i];
+      const s = srsMap[c.id] || { nextDue: 0 };
       if (!s.nextDue || s.nextDue <= now) due.push(i);
     }
-    // prefer due not in recent
-    const filtered = due.filter(i => !recent.current.includes(shuffledPool[i].id));
-    const pickPool = filtered.length ? filtered : (due.length ? due : shuffledPool.map((_,i)=>i));
-    const idx = pickPool[Math.floor(Math.random()*pickPool.length)];
-    return idx;
+    const candidates = due.filter(i => !recentSeen.current.includes(pool[i].id));
+    const pickPool = candidates.length ? candidates : (due.length ? due : pool.map((_, i) => i));
+    return pickPool[Math.floor(Math.random() * pickPool.length)];
   }
 
-  // finalize generic: use pendingDetail to update srs and advance
-  function finalizeAdvance(detail = null) {
-    if (!card) return;
-    const d = detail || pendingDetail || {};
-    // map detail to updateSrsForCard: reuse existing function updateSrsForCard(cardId, detail)
-    updateSrsForCard(card.id, d); // assume exists
-    // scoring
-    const overall = (d.jpMeaningOk !== undefined) ? !!d.jpMeaningOk : ((d.kanaOk!==undefined||d.drawOk!==undefined) ? ((d.kanaOk!==false) && (d.drawOk!==false)) : false);
-    // update counters if you maintain them...
-    // track recent
-    recent.current = [card.id, ...recent.current.filter(x=>x!==card.id)].slice(0,8);
-    const nextIdx = chooseNextIndex();
-    setCurrentIdx(nextIdx);
-    setKanaInput('');
-    setShowAnswer(false);
-    setAnswered(false);
-    setPendingResult(null);
-    setPendingDetail(null);
-    setFeedback(null);
-    boardRef.current?.clear?.();
+  // minimal SRS update
+  function defaultSrs() {
+    return { repetitions: 0, interval: 0, ease: 2.5, lastReviewed: null, nextDue: 0, progressKana: 0, progressKanji: 0 };
+  }
+  function updateSrsForCard(cardId, detail = {}) {
+    setSrsMap(prev => {
+      const next = { ...prev };
+      const cur = next[cardId] ? { ...next[cardId] } : defaultSrs();
+      // update progress heuristics
+      if (detail.kanaOk === true) cur.progressKana = Math.min(100, (cur.progressKana || 0) + 20);
+      if (detail.kanaOk === false) cur.progressKana = Math.max(0, (cur.progressKana || 0) - 25);
+      if (detail.drawOk === true) cur.progressKanji = Math.min(100, (cur.progressKanji || 0) + 20);
+      if (detail.drawOk === false) cur.progressKanji = Math.max(0, (cur.progressKanji || 0) - 25);
+      // overall
+      const overall = ('jpMeaningOk' in detail) ? detail.jpMeaningOk : (detail.kanaOk !== undefined || detail.drawOk !== undefined ? (detail.kanaOk !== false && detail.drawOk !== false) : null);
+      if (overall === true) {
+        if (cur.repetitions === 0) cur.interval = 1;
+        else if (cur.repetitions === 1) cur.interval = 6;
+        else cur.interval = Math.max(1, Math.round(cur.interval * cur.ease));
+        cur.repetitions = (cur.repetitions || 0) + 1;
+      } else if (overall === false) {
+        cur.repetitions = 0;
+        cur.interval = 1;
+        cur.ease = Math.max(1.3, (cur.ease || 2.5) - 0.2);
+      }
+      cur.lastReviewed = Date.now();
+      cur.nextDue = cur.lastReviewed + (cur.interval || 0) * 24 * 3600 * 1000;
+      next[cardId] = cur;
+      return next;
+    });
   }
 
-  // small ref to keep auth unsubscribe between renders
-  const appAuthUnsub = useRef(null);
+  // romaji normalization & matching
+  function normalizeRomaji(s = '') {
+    const m = { 'ā': 'a', 'ī': 'i', 'ū': 'u', 'ē': 'e', 'ō': 'o' };
+    let out = String(s || '').normalize('NFKC').trim().toLowerCase();
+    out = out.replace(/\s+/g, '');
+    out = out.replace(/[āīūēō]/g, ch => m[ch] || ch);
+    out = out.replace(/[^a-z0-9]/g, '');
+    return out;
+  }
+  function romajiMatches(input, romajiList = []) {
+    if (!input) return false;
+    const inNorm = normalizeRomaji(input);
+    return (romajiList || []).some(r => normalizeRomaji(r) === inNorm);
+  }
 
-  // make sure recentSeen exists
-  const recentSeen = useRef([]);
-
-  // Robust kanji checking (uses toHiraganaRaw and drawing similarity)
+  // Kanji checking routine: kana typing + optional drawing similarity
   async function checkAnswerForKanji(localCard) {
     if (!localCard) return false;
     let kanaOk = null;
-    if (kanaInput && kanaInput.trim()) {
-      const normalized = toHiraganaRaw(kanaInput);
-      kanaOk = (localCard.kana || []).map(k => toHiraganaRaw(k)).some(k => k === normalized);
+    if (inputValue && inputValue.trim()) {
+      kanaOk = (localCard.kana || []).map(k => toHiraganaRaw(k)).some(k => toHiraganaRaw(inputValue) === k);
     }
     let drawOk = null;
     if (promptMode === 'meaning->kanji') {
@@ -158,267 +187,279 @@ export default function App() {
         const userImg = boardRef.current?.getImage ? boardRef.current.getImage(64) : null;
         if (!userImg) drawOk = false;
         else {
+          // render target and compare
           const target = renderKanjiImage(localCard.kanji, 64);
           let sum = 0;
           for (let i = 0; i < userImg.length; i++) sum += Math.abs(userImg[i] - target[i]);
           const sim = 1 - (sum / (255 * userImg.length));
           drawOk = sim >= 0.48;
         }
-      } catch (e) {
+      } catch {
         drawOk = false;
       }
     }
-    // Decide overall based on promptMode
+    // decide overall
     let overall = false;
     if (promptMode === 'kanji->kana') overall = !!kanaOk;
     else if (promptMode === 'meaning->kanji') {
-      // if user typed kana and drew, require both; else accept whichever exists
       if (kanaOk !== null && drawOk !== null) overall = !!(kanaOk && drawOk);
       else if (kanaOk !== null) overall = !!kanaOk;
       else overall = !!drawOk;
     }
-    // set state
     setAnswered(true);
     setPendingDetail({ kanaOk, drawOk });
-    setPendingResult(overall);
     setShowAnswer(true);
-    setFeedback(overall ? { ok: true, message: 'Correct' } : { ok: false, message: 'Incorrect' });
+    setFeedback(overall ? { ok: true, message: 'Correct.' } : { ok: false, message: 'Incorrect.' });
     return overall;
   }
 
-  // helper: normalize romaji (lowercase, remove spaces, map macrons to simple vowels)
-  function normalizeRomaji(s = '') {
-    const map = { 'ā':'a','ī':'i','ū':'u','ē':'e','ō':'o','Ā':'a','Ī':'i','Ū':'u','Ē':'e','Ō':'o' };
-    let out = String(s || '').normalize('NFKC').trim().toLowerCase();
-    out = out.replace(/\s+/g, '');
-    out = out.replace(/[āīūēōĀĪŪĒŌ]/g, ch => map[ch] || ch);
-    // remove punctuation
-    out = out.replace(/[^a-z0-9]/g, '');
-    return out;
-  }
-
-  // robust comparison for romaji lists
-  function romajiMatches(input, romajiList = []) {
-    if (!input) return false;
-    const inNorm = normalizeRomaji(input);
-    return (romajiList || []).some(r => normalizeRomaji(r) === inNorm);
-  }
-
-  // ---------- Validation logic ----------
+  // main validation
   async function checkAnswer() {
     if (!card) {
-      setFeedback({ ok:false, message: 'Aucune carte sélectionnée.' });
+      setFeedback({ ok: false, message: 'No card available.' });
       return;
     }
-
-    // Verb/Word card flows
     if (isVerbWordCard(card)) {
       if (promptMode === 'jp->meaning') {
-        // Expect meaning: compare normalized lowercase substring
-        const user = (kanaInput || '').trim().toLowerCase();
+        const user = (inputValue || '').trim().toLowerCase();
         const ok = (card.meanings || []).some(m => {
           const mm = String(m || '').toLowerCase().trim();
           return mm === user || (user.length > 1 && mm.includes(user));
         });
         setAnswered(true);
         setPendingDetail({ jpMeaningOk: ok });
-        setPendingResult(!!ok);
-        setShowAnswer(true); // reveal answer on validation
-        setFeedback(ok ? { ok:true, message: 'Correct.' } : { ok:false, message: 'Incorrect.' });
+        setShowAnswer(true);
+        setFeedback(ok ? { ok: true, message: 'Correct.' } : { ok: false, message: 'Incorrect.' });
         return;
-      }
-
-      if (promptMode === 'meaning->jp') {
-        const raw = (kanaInput || '').trim();
+      } else if (promptMode === 'meaning->jp') {
+        const raw = (inputValue || '').trim();
         const ascii = /^[\x00-\x7F]+$/.test(raw);
         let ok = false;
-        if (ascii) {
-          // compare romaji normalized
-          ok = romajiMatches(raw, card.romaji || []);
-        } else {
-          // compare kana (normalize) or kanji exact
-          const hiraIn = toHiraganaRaw(raw);
-          ok = (card.kana || []).map(k => toHiraganaRaw(k)).some(k => k === hiraIn) || ((card.kanji || '') === raw || (card.kanji || '').includes(raw));
+        if (ascii) ok = romajiMatches(raw, card.romaji || []);
+        else {
+          const hira = toHiraganaRaw(raw);
+          ok = (card.kana || []).map(k => toHiraganaRaw(k)).some(k => k === hira) || ((card.kanji || '') === raw || (card.kanji || '').includes(raw));
         }
         setAnswered(true);
         setPendingDetail({ jpMeaningOk: ok });
-        setPendingResult(!!ok);
         setShowAnswer(true);
-        setFeedback(ok ? { ok:true, message: 'Correct.' } : { ok:false, message: 'Incorrect.' });
+        setFeedback(ok ? { ok: true, message: 'Correct.' } : { ok: false, message: 'Incorrect.' });
         return;
       }
     }
-
-    // Kanji flows: delegate to kanji checking routine (existing)
+    // kanji flow
     if (isKanjiCard(card)) {
       await checkAnswerForKanji(card);
       return;
     }
-
-    // fallback
+    // default
     setAnswered(true);
-    setPendingDetail({ jpMeaningOk:false });
-    setPendingResult(false);
+    setPendingDetail({ jpMeaningOk: false });
     setShowAnswer(true);
-    setFeedback({ ok:false, message: 'Incorrect.' });
+    setFeedback({ ok: false, message: 'Incorrect.' });
   }
 
-  // Show answer now just reveals; it sets answered so the next press counts as failure when confirmed via Next
+  // Show answer: reveal and mark as shown (Next will finalize as incorrect if pendingDetail absent)
   function handleShowAnswer() {
     if (!card) return;
     setShowAnswer(true);
     setAnswered(true);
-    // mark pendingResult false but do not immediately finalize; Next will record this as incorrect
-    setPendingResult(false);
-    setPendingDetail({ jpMeaningOk: false, kanaOk: false, drawOk: false });
-    setFeedback({ ok:false, message: 'Réponse affichée — appuyez sur Suivant pour continuer (comptera comme incorrect).' });
+    setPendingDetail(null); // indicate no user-correct result
+    setFeedback({ ok: false, message: 'Answer shown — press Next to continue (will be counted as incorrect).' });
   }
 
-  // Enter key handler attached to input(s): first Enter = validate, second Enter = next
-  function onAnswerKeyDown(e) {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    if (!answered) {
-      checkAnswer();
-    } else {
-      // already answered -> move to next
-      handleNext();
-    }
-  }
-
-  // Next handler: finalize current pendingDetail (if none and showAnswer true, treat as wrong)
-  function handleNext() {
+  function finalizeAdvance(detail = null) {
     if (!card) return;
-    if (!answered) {
-      // user skipped without validating: count as wrong
-      if (isVerbWordCard(card)) finalizeAdvance({ jpMeaningOk: false });
-      else finalizeAdvance({ kanaOk: false, drawOk: false });
-      return;
+    const d = detail ?? pendingDetail ?? null;
+    if (d) {
+      if ('jpMeaningOk' in d) updateSrsForCard(card.id, { kanaOk: d.jpMeaningOk, drawOk: null });
+      else updateSrsForCard(card.id, { kanaOk: d.kanaOk ?? null, drawOk: d.drawOk ?? null });
+    } else {
+      // shown answer counted as failure
+      if (isVerbWordCard(card)) updateSrsForCard(card.id, { kanaOk: false, drawOk: null });
+      else updateSrsForCard(card.id, { kanaOk: false, drawOk: false });
     }
-    // if answered but no explicit pendingDetail (e.g., user clicked Show Answer) count as wrong
-    if (!pendingDetail) {
-      if (isVerbWordCard(card)) finalizeAdvance({ jpMeaningOk: false });
-      else finalizeAdvance({ kanaOk: false, drawOk: false });
-      return;
-    }
-    finalizeAdvance(); // uses pendingDetail
+    // record recent and pick next
+    recentSeen.current = [card.id, ...recentSeen.current.filter(id => id !== card.id)].slice(0, 10);
+    const next = chooseNextIndex();
+    setCurrentIdx(next);
+    setInputValue('');
+    setShowAnswer(false);
+    setAnswered(false);
+    setPendingDetail(null);
+    setFeedback(null);
+    try { boardRef.current?.clear?.(); } catch {}
   }
 
-  // cleanup auth unsub safely
-  useEffect(() => {
-    // subscribe earlier (example)
-    // store unsub in appAuthUnsub.current via onAuthStateChange elsewhere
-    return () => {
-      try { if (typeof appAuthUnsub.current === 'function') appAuthUnsub.current(); } catch(e){ /* ignore */ }
-    };
-  }, []);
+  function handleNext() {
+    if (!answered) {
+      // skipped: treat as wrong
+      finalizeAdvance(null);
+      return;
+    }
+    // if answered and we have pendingDetail use it; else finalize as wrong
+    finalizeAdvance(pendingDetail ?? null);
+  }
 
-  // small UI: central simplified layout
+  // manual mark buttons
+  function onMarkWasCorrect() {
+    if (!card) return;
+    if (isVerbWordCard(card)) {
+      setPendingDetail({ jpMeaningOk: true });
+    } else {
+      setPendingDetail({ kanaOk: true, drawOk: true });
+    }
+    setAnswered(true);
+    setShowAnswer(true);
+    setFeedback({ ok: true, message: 'Marked correct — press Next to continue.' });
+  }
+  function onMarkWasWrong() {
+    if (!card) return;
+    if (isVerbWordCard(card)) setPendingDetail({ jpMeaningOk: false });
+    else setPendingDetail({ kanaOk: false, drawOk: false });
+    setAnswered(true);
+    setShowAnswer(true);
+    setFeedback({ ok: false, message: 'Marked incorrect — press Next to continue.' });
+  }
+
+  // Reset SRS for selected decks
+  function resetAllSrsForSelected() {
+    if (!selectedDecks.length) {
+      setFeedback({ ok: false, message: 'No decks selected.' });
+      return;
+    }
+    setSrsMap(prev => {
+      const next = { ...prev };
+      selectedDecks.forEach(k => (decks[k] || []).forEach(c => { next[c.id] = defaultSrs(); }));
+      return next;
+    });
+    setFeedback({ ok: true, message: 'SRS reset for selected decks.' });
+  }
+
+  // helper to render target kanji image (used for similarity)
+  function renderKanjiImage(kanji, size = 64) {
+    const off = document.createElement('canvas');
+    off.width = size; off.height = size;
+    const ctx = off.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#000';
+    ctx.font = `${Math.floor(size * 0.8)}px serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(kanji || '', size / 2, size / 2 + Math.floor(size * 0.05));
+    const img = ctx.getImageData(0, 0, size, size).data;
+    const gray = new Uint8ClampedArray(size * size);
+    for (let i = 0, p = 0; i < img.length; i += 4, p++) {
+      const r = img[i], g = img[i + 1], b = img[i + 2];
+      gray[p] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+    }
+    return gray;
+  }
+
+  // UI helpers
+  const accuracyPercent = useMemo(() => {
+    // compute simple global accuracy for display
+    let total = 0, correct = 0;
+    for (const id of Object.keys(srsMap)) {
+      const s = srsMap[id];
+      total += (s.repetitions || 0);
+      correct += (s.repetitions || 0); // simple placeholder; you can refine
+    }
+    return total === 0 ? 0 : Math.round((correct / total) * 100);
+  }, [srsMap]);
+
+  // Landing & main render
   return (
     <>
       {showLanding ? (
         <Landing onStart={handleStart} />
       ) : (
-        <div style={{minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', padding:12}}>
-          <header style={{width:'100%', maxWidth:820, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-            <div style={{fontWeight:700}}>Japanese Memory</div>
-            <div style={{display:'flex', gap:8, alignItems:'center'}}>
-              <button onClick={()=>setShowLanding(true)} style={{padding:'6px 8px'}}>Menu</button>
-              <button onClick={()=>setShowKanjiBrowser(true)} style={{padding:'6px 8px'}}>Vocab</button>
-              <button onClick={resetAllSrsForSelected} style={{padding:'6px 8px'}}>Reset SRS</button>
+        <div style={{ minHeight: '100vh', padding: 12, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <header style={{ width: '100%', maxWidth: 920, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontWeight: 700 }}>Japanese Memory</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <Auth />
+              <button type="button" onClick={() => setShowLanding(true)} style={{ padding: '6px 8px' }}>Menu</button>
+              <button type="button" onClick={() => setShowKanjiBrowser(true)} style={{ padding: '6px 8px' }}>Vocab</button>
+              <button type="button" onClick={resetAllSrsForSelected} style={{ padding: '6px 8px' }}>Reset SRS</button>
             </div>
           </header>
 
-          <main style={{flex:1, display:'flex', flexDirection:'column', width:'100%', maxWidth:820, marginTop:12}}>
-            <div style={{background:'var(--panel)', padding:14, borderRadius:10, minHeight:400, display:'flex', flexDirection:'column', alignItems:'stretch'}}>
-              {/* Top: prompt */}
-              <div style={{textAlign:'center', marginBottom:8, color:'var(--muted)'}}>
-                <div style={{fontSize:20, fontWeight:700}}>
-                  {card ? ( promptMode.startsWith('kanji') || promptMode === 'jp->meaning' ? ( promptMode === 'jp->meaning' ? card.kanji : (promptMode === 'kanji->kana' ? card.kanji : (card.meanings[0]||card.kanji)) ) : (card.meanings[0]||card.kanji) ) : 'No cards selected' }
-                </div>
-                {card && promptMode === 'jp->meaning' && <div style={{fontSize:14, color:'var(--muted)'}}>{(card.kana||[]).join(', ')}</div>}
-                {card && promptMode === 'meaning->jp' && <div style={{fontSize:13, color:'var(--muted)'}}>Meaning: {(card.meanings||[]).join(', ')}</div>}
+          <main style={{ width: '100%', maxWidth: 920 }}>
+            <div style={{ background: 'var(--panel)', padding: 14, borderRadius: 10 }}>
+              <div style={{ textAlign: 'center', marginBottom: 10 }}>
+                {/* prompt header */}
+                {card ? (
+                  <>
+                    { (promptMode === 'jp->meaning' || promptMode === 'kanji->kana' || (isKanjiCard(card) && promptMode === 'meaning->kanji')) && (
+                      <div style={{ fontSize: 22, fontWeight: 700 }}>{card.kanji}</div>
+                    )}
+                    { promptMode === 'jp->meaning' && card?.kana && <div style={{ color: 'var(--muted)' }}>({card.kana.join(', ')})</div> }
+                    { promptMode === 'meaning->jp' && <div style={{ fontSize: 18, color: 'var(--muted)' }}>Meaning: {(card.meanings || []).join(', ')}</div> }
+                    { promptMode === 'kanji->kana' && <div style={{ fontSize: 14, color: 'var(--muted)' }}>Provide kana reading</div> }
+                    { promptMode === 'meaning->kanji' && <div style={{ fontSize: 14, color: 'var(--muted)' }}>Draw the kanji or type kana</div> }
+                  </>
+                ) : <div style={{ color: 'var(--muted)' }}>No cards selected</div> }
               </div>
 
-              {/* Center: drawing OR input */}
-              <div style={{flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:12}}>
+              <div style={{ minHeight: 320, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 {card ? (
-                  (isKanjiCard(card) && (promptMode === 'meaning->kanji')) ? (
-                    <div style={{width:'100%'}}><DrawingBoard ref={boardRef} /></div>
+                  (isKanjiCard(card) && promptMode === 'meaning->kanji') ? (
+                    <div style={{ width: '100%' }}>
+                      <DrawingBoard ref={boardRef} />
+                    </div>
                   ) : (
                     <input
-                      value={kanaInput}
-                      onChange={e=>setKanaInput(e.target.value)}
-                      onKeyDown={(e)=>{ /* Enter = validate / next */ if (typeof onAnswerKeyDown === 'function') onAnswerKeyDown(e); }}
-                      placeholder="Entrez votre réponse puis appuyez sur Valider / Enter"
-                      style={{width:'100%', padding:12, fontSize:18, borderRadius:10, border:'1px solid rgba(255,255,255,0.04)', background:'transparent', color:'inherit'}}
+                      value={inputValue}
+                      onChange={e => setInputValue(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (!answered) checkAnswer();
+                          else handleNext();
+                        }
+                      }}
+                      placeholder="Entrez votre réponse et appuyez sur Valider / Enter"
+                      style={{ width: '100%', padding: 12, fontSize: 18, borderRadius: 10, border: '1px solid rgba(255,255,255,0.04)', background: 'transparent', color: 'inherit' }}
                     />
                   )
-                ) : <div style={{color:'var(--muted)'}}>Aucun carte — réglez la sélection dans le menu</div>}
+                ) : <div style={{ color: 'var(--muted)' }}>Sélectionnez des decks dans le menu.</div>}
               </div>
 
-              {/* Bottom: action buttons */}
-              <div style={{display:'flex', gap:8, justifyContent:'center', marginTop:12}}>
-                <button
-                  type="button"
-                  onClick={() => { if (typeof checkAnswer === 'function') checkAnswer(); }}
-                  style={{padding:'10px 14px', borderRadius:8, background:'#0ea5e9'}}
-                >
-                  Valider
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => { if (typeof handleShowAnswer === 'function') handleShowAnswer(); }}
-                  style={{padding:'10px 14px', borderRadius:8, background:'#f97316'}}
-                >
-                  Afficher réponse
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => { if (typeof handleNext === 'function') handleNext(); }}
-                  style={{padding:'10px 14px', borderRadius:8, background:'#6366f1'}}
-                >
-                  Suivant
-                </button>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 12 }}>
+                <button type="button" onClick={checkAnswer} style={{ padding: '10px 14px', borderRadius: 8, background: '#0ea5e9' }}>Valider</button>
+                <button type="button" onClick={handleShowAnswer} style={{ padding: '10px 14px', borderRadius: 8, background: '#f97316' }}>Afficher réponse</button>
+                <button type="button" onClick={handleNext} style={{ padding: '10px 14px', borderRadius: 8, background: '#6366f1' }}>Suivant</button>
+                <button type="button" onClick={onMarkWasCorrect} style={{ padding: '10px 14px', borderRadius: 8, background: '#16a34a' }}>I was correct</button>
+                <button type="button" onClick={onMarkWasWrong} style={{ padding: '10px 14px', borderRadius: 8, background: '#ef4444' }}>I was wrong</button>
               </div>
 
-              {/* Feedback & SRS */}
-              <div style={{marginTop:12, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                <div style={{color: feedback?.ok ? '#bbf7d0' : '#fecaca'}}>{feedback?.message}</div>
-                <div style={{width:220}}><ScoreBar correct={0} total={0} percent={0} srsPercent={card ? Math.round(((srsMap[card.id]?.progressKana||0)+(srsMap[card.id]?.progressKanji||0))/2) : null} /></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                <div style={{ color: feedback?.ok ? '#bbf7d0' : '#fecaca' }}>{feedback?.message}</div>
+                <div style={{ width: 220 }}>
+                  <ScoreBar correct={0} total={0} percent={0} srsPercent={card ? Math.round(((srsMap[card.id]?.progressKana || 0) + (srsMap[card.id]?.progressKanji || 0)) / 2) : null} />
+                </div>
               </div>
+
+              {/* reveal answer area */}
+              {showAnswer && card && (
+                <div style={{ marginTop: 12, padding: 10, borderRadius: 8, background: 'rgba(255,255,255,0.02)' }}>
+                  <div style={{ fontWeight: 700 }}>Answer</div>
+                  <div style={{ marginTop: 6 }}>{card.kanji}</div>
+                  <div style={{ marginTop: 6, color: 'var(--muted)' }}>Kana: {(card.kana || []).join(', ')} — Meanings: {(card.meanings || []).join(' / ')}</div>
+                </div>
+              )}
             </div>
           </main>
-
-          {showKanjiBrowser && <KanjiBrowser decksMap={decksMap} selectedDecks={selectedDecks} onSelect={(k)=>{ /* find card and jump to it */ }} onClose={()=>setShowKanjiBrowser(false)} srsMap={srsMap} />}
-
+          { /* KanjiBrowser overlay */ }
+          <KanjiBrowser decksMap={decks} selectedDecks={selectedDecks} onSelect={(k) => {
+            // jump to first card containing k
+            const idx = pool.findIndex(c => c.kanji && c.kanji.includes(k));
+            if (idx >= 0) setCurrentIdx(idx);
+          }} onClose={() => { /* close is handled internally by KanjiBrowser consumer; we control via prop if needed */ }} srsMap={srsMap} />
         </div>
       )}
     </>
   );
 }
 
-// ...existing helper functions (updateSrsForCard, checkAnswerForKanji, etc.) ...
-
-// Reset SRS for all cards in currently selected decks
-function resetAllSrsForSelected() {
-  if (!selectedDecks || selectedDecks.length === 0) {
-    setFeedback({ ok:false, message: 'No decks selected to reset.' });
-    return;
-  }
-  setSrsMap(prev => {
-    const next = { ...prev };
-    selectedDecks.forEach(deckKey => {
-      const list = decks[deckKey] || [];
-      list.forEach(card => {
-        next[card.id] = typeof defaultSrs === 'function' ? defaultSrs() : {
-          repetitions: 0, interval: 0, ease: 2.5, lastReviewed: null, nextDue: 0, progressKana: 0, progressKanji: 0
-        };
-      });
-    });
-    return next;
-  });
-  setFeedback({ ok:true, message: 'SRS réinitialisé pour les decks sélectionnés.' });
-}
+// end of App.jsx
