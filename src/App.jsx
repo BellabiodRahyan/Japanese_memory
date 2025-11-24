@@ -348,9 +348,9 @@ export default function App() {
                   ) : (
                     <input
                       value={kanaInput}
-                      onChange={e => setKanaInput(e.target.value)}
-                      onKeyDown={onAnswerKeyDown}
-                      placeholder={ promptMode === 'jp->meaning' ? 'Tapez la traduction (meaning)...' : 'Tapez la forme japonaise (kana/romaji/kanji)...' }
+                      onChange={e=>setKanaInput(e.target.value)}
+                      onKeyDown={(e)=>{ /* Enter = validate / next */ if (typeof onAnswerKeyDown === 'function') onAnswerKeyDown(e); }}
+                      placeholder="Entrez votre réponse puis appuyez sur Valider / Enter"
                       style={{width:'100%', padding:12, fontSize:18, borderRadius:10, border:'1px solid rgba(255,255,255,0.04)', background:'transparent', color:'inherit'}}
                     />
                   )
@@ -359,9 +359,29 @@ export default function App() {
 
               {/* Bottom: action buttons */}
               <div style={{display:'flex', gap:8, justifyContent:'center', marginTop:12}}>
-                <button onClick={checkAnswer} style={{padding:'10px 14px', borderRadius:8, background:'#0ea5e9'}}>Valider</button>
-                <button onClick={handleShowAnswer} style={{padding:'10px 14px', borderRadius:8, background:'#f97316'}}>Afficher réponse</button>
-                <button onClick={handleNext} style={{padding:'10px 14px', borderRadius:8, background:'#6366f1'}}>Suivant</button>
+                <button
+                  type="button"
+                  onClick={() => { if (typeof checkAnswer === 'function') checkAnswer(); }}
+                  style={{padding:'10px 14px', borderRadius:8, background:'#0ea5e9'}}
+                >
+                  Valider
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { if (typeof handleShowAnswer === 'function') handleShowAnswer(); }}
+                  style={{padding:'10px 14px', borderRadius:8, background:'#f97316'}}
+                >
+                  Afficher réponse
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { if (typeof handleNext === 'function') handleNext(); }}
+                  style={{padding:'10px 14px', borderRadius:8, background:'#6366f1'}}
+                >
+                  Suivant
+                </button>
               </div>
 
               {/* Feedback & SRS */}
