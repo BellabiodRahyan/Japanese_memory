@@ -25,7 +25,9 @@ export default function Auth({ onUserChange = () => {} }) {
     e.preventDefault();
     if (!email) return setStatus({ ok:false, msg: 'Enter email' });
     try {
-      await signInWithEmail(email);
+      // pass current origin so Supabase sends the magic link that redirects back to this site root
+      const redirectOrigin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : null;
+      await signInWithEmail(email, redirectOrigin);
       setStatus({ ok:true, msg: 'Magic link sent. Check your inbox.' });
     } catch (err) {
       setStatus({ ok:false, msg: err?.message || String(err) });

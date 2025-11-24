@@ -83,3 +83,29 @@ Supabase integration (SRS sync & auth)
    - The app falls back to localStorage if Supabase env vars are not set.
    - Make sure to configure row-level security and policies if you want stricter access.
    - For production, set RLS policies so users can only access their own srs rows.
+
+Supabase — Redirect URLs & magic-link troubleshooting
+1) Very important: add the exact origin you want Supabase to redirect to:
+   - In Supabase Console → Auth → Settings → Redirect URLs add the exact origin where users will land:
+     - https://japanese-memory-app.netlify.app
+     - https://japanese-memory-app.netlify.app/    (optional duplicate)
+     - http://localhost:5173                       (for local dev)
+   - In Supabase Console → Project Settings → General → Site URL set:
+     - https://japanese-memory-app.netlify.app
+
+2) Why this matters:
+   - When the app requests a magic link we now explicitly ask Supabase to redirect to the current origin (the app uses window.location.origin).
+   - Supabase will reject magic links that redirect to URLs not listed in Redirect URLs and the email will show "requested path is invalid".
+
+3) If you see "requested path is invalid" in the email:
+   - Open the magic-link email and inspect the URL (copy/paste the link into a text editor).
+   - Look for a parameter like `redirect_to=` or check the destination path — it must exactly match one of the Redirect URLs.
+   - If it does not, add that exact URL (including protocol and path) to the Redirect URLs list in Supabase or ensure the app passes window.location.origin when requesting the link.
+
+4) Testing:
+   - After adding Redirect URLs, go to the app, request a magic-link.
+   - Click the link in the email (it should redirect back to your site).
+   - If it does not, open DevTools Console for any errors and check Netlify env vars (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY).
+
+5) Security (RLS)
+   - Don't forget to enable Row Level Security and add owner-only policies for the srs table (see the SQL snippet earlier in this README).

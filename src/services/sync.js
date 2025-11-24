@@ -28,11 +28,12 @@ export async function initSync() {
 }
 
 // AUTH helpers ------------------------------------------------------
-export async function signInWithEmail(email) {
+export async function signInWithEmail(email, redirectTo = null) {
   if (!supabase) throw new Error('Supabase not initialized');
   try {
-    // magic link sign in
-    const res = await supabase.auth.signInWithOtp({ email });
+    // v2 API: pass emailRedirectTo inside options so Supabase builds a link to a known origin
+    const opts = redirectTo ? { emailRedirectTo: redirectTo } : undefined;
+    const res = await supabase.auth.signInWithOtp({ email, options: opts });
     return res;
   } catch (e) {
     console.error('signInWithEmail error', e);
