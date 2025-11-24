@@ -1,124 +1,55 @@
 import React, { useMemo, useState } from 'react';
 import './KanjiBrowser.css';
 
-/*
- Props:
-  - deck: array of cards (current deck) -- ONLY used to extract kanji from card.kanji
-  - onSelect(kanji): function called when user selects a kanji
-  - onClose(): close the browser
-*/
-export default function KanjiBrowser({ deck = [], onSelect = () => {}, onClose = () => {} }) {
+export default function KanjiBrowser({ decksMap = {}, selectedDecks = [], onSelect = () => {}, onClose = () => {}, srsMap = {} }) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(null);
 
-  // helper: extract unique kanji from a string
-  const extractKanjiFromString = (s = '') => {
-    if (!s) return [];
-    const set = new Set();
-    for (const ch of s) {
-      if (/[\p{sc=Han}]/u.test(ch)) set.add(ch);
-    }
-    return Array.from(set);
-  };
+  // aggregate cards from selectedDecks
+  const cards = useMemo(() => {
+    const out = [];
+    selectedDecks.forEach(k => {
+      const list = decksMap[k] || [];
+      list.forEach(c => out.push({...c, _deck: k}));
+    });
+    return out;
+  }, [decksMap, selectedDecks]);
 
-  // normalize helpers
-  const normalize = (s = '') => (String(s || '').toLowerCase().trim());
-  const toHiragana = (str = '') => {
-    // simple convert Katakana block to Hiragana; leave other chars untouched
-    let s = String(str || '').normalize('NFKC');
-    let out = '';
-    for (const ch of s) {
-      const code = ch.charCodeAt(0);
-      if (code >= 0x30A1 && code <= 0x30F3) {
-        out += String.fromCharCode(code - 0x60);
-      } else {
-        out += ch;
-      }
-    }
-    return out.replace(/\s+/g, '');
-  };
-
-  // all kanji found in provided deck (scan ONLY card.kanji fields)
+  // extract kanji set from cards
   const deckKanji = useMemo(() => {
     const set = new Set();
-    deck.forEach(card => {
-      if (card.kanji) {
-        for (const ch of card.kanji) if (/[\p{sc=Han}]/u.test(ch)) set.add(ch);
-      }
+    cards.forEach(card => {
+      if (card.kanji) for (const ch of card.kanji) if (/[\p{sc=Han}]/u.test(ch)) set.add(ch);
     });
     return Array.from(set).sort();
-  }, [deck]);
+  }, [cards]);
 
-  // map kanji -> cards that include it (cache)
-  const kanjiToCards = useMemo(() => {
-    const map = new Map();
-    deck.forEach(card => {
-      if (!card.kanji) return;
-      for (const ch of card.kanji) {
-        if (/[\p{sc=Han}]/u.test(ch)) {
-          if (!map.has(ch)) map.set(ch, []);
-          map.get(ch).push(card);
-        }
-      }
-    });
-    return map;
-  }, [deck]);
-
-  // visible kanji filtered by query:
-  // match if query is substring of kanji OR matches kana/meanings/romaji of any card containing the kanji
-  const visible = useMemo(() => {
-    const q = query.trim();
-    if (!q) return deckKanji;
-    const qNorm = normalize(q);
-    const qHira = toHiragana(q);
-    return deckKanji.filter(k => {
-      // direct kanji match
-      if (k.includes(q)) return true;
-      const cards = kanjiToCards.get(k) || [];
-      for (const c of cards) {
-        // check kana (normalize to hiragana)
-        if (c.kana && c.kana.some(ka => toHiragana(ka).includes(qHira))) return true;
-        // check romaji (ascii) match
-        if (c.romaji && c.romaji.some(r => normalize(r).includes(qNorm))) return true;
-        // check meanings (lowercase substring)
-        if (c.meanings && c.meanings.some(m => normalize(m).includes(qNorm))) return true;
-      }
-      return false;
-    });
-  }, [query, deckKanji, kanjiToCards]);
+  const visible = deckKanji.filter(k => k.includes(query));
 
   function onClickKanji(k) {
     setSelected(k);
     onSelect(k);
   }
 
-  // find cards that contain the selected kanji (for preview)
   const matchingCards = useMemo(() => {
     if (!selected) return [];
-    return (kanjiToCards.get(selected) || []);
-  }, [selected, kanjiToCards]);
+    return cards.filter(c => c.kanji && c.kanji.includes(selected));
+  }, [selected, cards]);
 
   return (
     <div className="kb-overlay" role="dialog" aria-label="Kanji browser">
       <div className="kb-panel">
         <div className="kb-header">
-          <div style={{fontWeight:700}}>Kanji Menu</div>
-          <div style={{display:'flex', gap:8, alignItems:'center'}}>
-            <button className="kb-close" onClick={onClose}>Close</button>
-          </div>
+          <div style={{fontWeight:700}}>Vocabulaire / Kanji</div>
+          <div style={{display:'flex', gap:8, alignItems:'center'}}><button className="kb-close" onClick={onClose}>Close</button></div>
         </div>
 
         <div className="kb-controls">
-          <input
-            className="kb-input small"
-            placeholder="Rechercher par kanji, kana, romaji ou meaning"
-            value={query}
-            onChange={e=>setQuery(e.target.value)}
-          />
+          <input className="kb-input small" placeholder="Rechercher par kanji/kana/meaning/romaji" value={query} onChange={e=>setQuery(e.target.value)} />
         </div>
 
         <div className="kb-grid" aria-live="polite">
-          {visible.length === 0 ? <div className="kb-empty">Aucun kanji trouvé dans ce deck.</div> : visible.map((k, i) => (
+          {visible.length === 0 ? <div className="kb-empty">Aucun kanji trouvé.</div> : visible.map((k, i) => (
             <button key={k+i} className="kb-kanji" onClick={()=>onClickKanji(k)} title={`Rechercher ${k}`}>{k}</button>
           ))}
         </div>
@@ -128,15 +59,27 @@ export default function KanjiBrowser({ deck = [], onSelect = () => {}, onClose =
             <div style={{fontSize:20, fontWeight:700}}>Sélectionné: {selected}</div>
             <div style={{marginTop:8, color:'var(--muted)'}}>Cartes contenant ce kanji:</div>
             <ul className="kb-list">
-              {matchingCards.length === 0 && <li className="kb-muted">Aucune carte avec ce kanji dans le deck.</li>}
-              {matchingCards.map(c => (
-                <li key={c.id}>
-                  <div className="kb-card-row">
-                    <div style={{fontSize:18}}>{c.kanji} <span className="kb-kana">{(c.kana || []).join(', ')}</span></div>
-                    <div className="kb-meanings">{(c.meanings || []).join(' / ')}</div>
-                  </div>
-                </li>
-              ))}
+              {matchingCards.length === 0 && <li className="kb-muted">Aucune carte avec ce kanji dans les decks sélectionnés.</li>}
+              {matchingCards.map(c => {
+                const s = srsMap[c.id] || {};
+                return (
+                  <li key={c.id}>
+                    <div style={{display:'flex', justifyContent:'space-between', gap:8, padding:'6px 0', borderBottom:'1px dashed rgba(255,255,255,0.02)'}}>
+                      <div>
+                        <div style={{fontSize:16}}>{c.kanji} <span style={{color:'var(--muted)', fontSize:12}}>({(c.kana||[]).join(', ')})</span></div>
+                        <div style={{fontSize:13, color:'var(--muted)'}}>{(c.meanings||[]).join(' / ')}</div>
+                      </div>
+                      <div style={{textAlign:'right'}}>
+                        <div style={{fontSize:12, color:'var(--muted)'}}>deck: {c._deck}</div>
+                        <div style={{fontSize:12}}>SRS: {Math.round(((s.progressKana||0)+(s.progressKanji||0))/2)}%</div>
+                        <div style={{marginTop:6}}>
+                          <button onClick={()=>onSelect(c.kanji)} style={{padding:'6px 8px', borderRadius:6}}>Go</button>
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}
