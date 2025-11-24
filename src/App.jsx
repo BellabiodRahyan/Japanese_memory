@@ -566,3 +566,46 @@ function matchesJapaneseInput(input, card) {
     return false;
   }
 }
+
+// add missing handlers for marking card manually as correct/incorrect
+function onMarkWasCorrect() {
+  // Verb/Word decks: set jpMeaningOk true
+  if (isVerbWordDeck(deckKey)) {
+    setAnswered(true);
+    setPendingResult(true);
+    setPendingDetail({ jpMeaningOk: true });
+    setFeedback({ ok: true, message: 'Marked correct — press Enter or Confirm & Next.' });
+    setShowAnswer(true);
+    return;
+  }
+
+  // Kanji decks: determine which parts are required and mark them true
+  const needKana = (cardMode === 'kanji->kana' || cardMode === 'both');
+  const needDraw = (cardMode === 'meaning->kanji' || cardMode === 'both');
+  setAnswered(true);
+  setPendingResult(true);
+  setPendingDetail({ kanaOk: needKana ? true : null, drawOk: needDraw ? true : null });
+  setFeedback({ ok: true, message: 'Marked correct — press Enter or Confirm & Next.' });
+  setShowAnswer(true);
+}
+
+function onMarkWasWrong() {
+  // Verb/Word decks: set jpMeaningOk false
+  if (isVerbWordDeck(deckKey)) {
+    setAnswered(true);
+    setPendingResult(false);
+    setPendingDetail({ jpMeaningOk: false });
+    setFeedback({ ok: false, message: 'Marked incorrect — press Enter or Confirm & Next.' });
+    setShowAnswer(true);
+    return;
+  }
+
+  // Kanji decks: determine which parts are required and mark them false
+  const needKana = (cardMode === 'kanji->kana' || cardMode === 'both');
+  const needDraw = (cardMode === 'meaning->kanji' || cardMode === 'both');
+  setAnswered(true);
+  setPendingResult(false);
+  setPendingDetail({ kanaOk: needKana ? false : null, drawOk: needDraw ? false : null });
+  setFeedback({ ok: false, message: 'Marked incorrect — press Enter or Confirm & Next.' });
+  setShowAnswer(true);
+}
