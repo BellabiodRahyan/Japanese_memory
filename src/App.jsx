@@ -22,6 +22,9 @@ export default function App() {
   const [enableKanji, setEnableKanji] = useState(true);
   const [enableWords, setEnableWords] = useState(true);
 
+  // control KanjiBrowser overlay visibility
+  const [showKanjiBrowser, setShowKanjiBrowser] = useState(false);
+
   // Pool & card pointer
   const [pool, setPool] = useState([]); // array of card objects { ...card, _deck }
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -390,13 +393,23 @@ export default function App() {
                 {/* prompt header */}
                 {card ? (
                   <>
-                    { (promptMode === 'jp->meaning' || promptMode === 'kanji->kana' || (isKanjiCard(card) && promptMode === 'meaning->kanji')) && (
-                      <div style={{ fontSize: 22, fontWeight: 700 }}>{card.kanji}</div>
-                    )}
-                    { promptMode === 'jp->meaning' && card?.kana && <div style={{ color: 'var(--muted)' }}>({card.kana.join(', ')})</div> }
+                    {/* Show meanings when the prompt asks for kanji (user must produce kanji by drawing/typing) */}
+                    { promptMode === 'meaning->kanji' ? (
+                      <div>
+                        <div style={{ fontSize: 20, fontWeight: 700 }}>Meaning: {(card.meanings || []).join(' / ')}</div>
+                      </div>
+                    ) : null }
+
+                    {/* Show Japanese (kanji + furigana) when prompt is JP->meaning or kanji->kana */}
+                    { (promptMode === 'jp->meaning' || promptMode === 'kanji->kana') && (
+                      <>
+                        <div style={{ fontSize: 22, fontWeight: 700 }}>{card.kanji}</div>
+                        { promptMode === 'jp->meaning' && card?.kana && <div style={{ color: 'var(--muted)' }}>({card.kana.join(', ')})</div> }
+                        { promptMode === 'kanji->kana' && <div style={{ fontSize: 14, color: 'var(--muted)' }}>Provide kana reading</div> }
+                      </>
+                    ) }
+
                     { promptMode === 'meaning->jp' && <div style={{ fontSize: 18, color: 'var(--muted)' }}>Meaning: {(card.meanings || []).join(', ')}</div> }
-                    { promptMode === 'kanji->kana' && <div style={{ fontSize: 14, color: 'var(--muted)' }}>Provide kana reading</div> }
-                    { promptMode === 'meaning->kanji' && <div style={{ fontSize: 14, color: 'var(--muted)' }}>Draw the kanji or type kana</div> }
                   </>
                 ) : <div style={{ color: 'var(--muted)' }}>No cards selected</div> }
               </div>
@@ -450,12 +463,27 @@ export default function App() {
               )}
             </div>
           </main>
-          { /* KanjiBrowser overlay */ }
-          <KanjiBrowser decksMap={decks} selectedDecks={selectedDecks} onSelect={(k) => {
-            // jump to first card containing k
-            const idx = pool.findIndex(c => c.kanji && c.kanji.includes(k));
-            if (idx >= 0) setCurrentIdx(idx);
-          }} onClose={() => { /* close is handled internally by KanjiBrowser consumer; we control via prop if needed */ }} srsMap={srsMap} />
+
+          { showKanjiBrowser && (
+            <KanjiBrowser
+              decksMap={decks}
+              selectedDecks={selectedDecks}
+              srsMap={srsMap}
+              onClose={() => setShowKanjiBrowser(false)}
+              onSelect={(k) => {
+                // jump to first card in current pool containing the selected kanji and close overlay
+                const idx = pool.findIndex(c => c.kanji && c.kanji.includes(k));
+                if (idx >= 0) {
+                  setCurrentIdx(idx);
+                  setShowKanjiBrowser(false);
+                } else {
+                  // If not in current pool, just close and notify
+                  setShowKanjiBrowser(false);
+                  setFeedback({ ok: false, message: 'Le kanji sélectionné n\'est pas dans la sélection actuelle.' });
+                }
+              }}
+            />
+          )}
         </div>
       )}
     </>
