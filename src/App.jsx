@@ -317,3 +317,24 @@ export default function App() {
 }
 
 // ...existing helper functions (updateSrsForCard, checkAnswerForKanji, etc.) ...
+
+// Reset SRS for all cards in currently selected decks
+function resetAllSrsForSelected() {
+  if (!selectedDecks || selectedDecks.length === 0) {
+    setFeedback({ ok:false, message: 'No decks selected to reset.' });
+    return;
+  }
+  setSrsMap(prev => {
+    const next = { ...prev };
+    selectedDecks.forEach(deckKey => {
+      const list = decks[deckKey] || [];
+      list.forEach(card => {
+        next[card.id] = typeof defaultSrs === 'function' ? defaultSrs() : {
+          repetitions: 0, interval: 0, ease: 2.5, lastReviewed: null, nextDue: 0, progressKana: 0, progressKanji: 0
+        };
+      });
+    });
+    return next;
+  });
+  setFeedback({ ok:true, message: 'SRS réinitialisé pour les decks sélectionnés.' });
+}
