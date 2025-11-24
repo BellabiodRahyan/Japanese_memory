@@ -1,4 +1,17 @@
 export const decks = {
+  Verb_1: [
+    {
+      id: "to live" ,
+      kanji: "生きる",
+      kana: ["いきる"],
+      meanings: ["vivre"],
+      romaji: ["ikiru"],
+      examples: [
+        "彼は長く生きる。 — Il vit longtemps。",
+        "自然の中で生きるのが好きです。 — J'aime vivre dans la nature。"
+      ]
+    }
+  ],
   Basic_Kanji_Book: [
     {
       id: "montagne",
